@@ -14,7 +14,7 @@ namespace CollapseLauncher
     internal static class Updater
     {
         public const string Repository="zarlykovruslan14-dot/collapse-crack";
-        public static readonly Version Current=new Version(6,0,0,0);
+        public static readonly Version Current=new Version(6,0,1,0);
         [DataContract] internal sealed class Release
         {
             [DataMember(Name="tag_name")] public string Tag;
@@ -31,7 +31,7 @@ namespace CollapseLauncher
         {
             using(var client=new HttpClient{Timeout=TimeSpan.FromSeconds(12)})
             {
-                client.DefaultRequestHeaders.UserAgent.ParseAdd("CollapseLauncher/6.0.0");
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("CollapseLauncher/6.0.1");
                 using(var response=await client.GetAsync("https://api.github.com/repos/"+Repository+"/releases/latest"))
                 {
                     response.EnsureSuccessStatusCode();

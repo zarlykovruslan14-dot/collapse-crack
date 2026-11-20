@@ -15,8 +15,8 @@ using System.Windows.Shapes;
 using Path=System.IO.Path;
 using Microsoft.Win32;
 
-[assembly:AssemblyVersion("6.0.0.0")]
-[assembly:AssemblyFileVersion("6.0.0.0")]
+[assembly:AssemblyVersion("6.0.1.0")]
+[assembly:AssemblyFileVersion("6.0.1.0")]
 
 namespace CollapseLauncher
 {
@@ -307,17 +307,37 @@ namespace CollapseLauncher
         void Packs()
         {
             var section=Section("Ресурспаки","Один активный список применяется к профилям Bedrock перед запуском.");
-            var layout=Rows(-1,0);Put(section,layout,1);var columns=Cols(-1,74,-1);
+            var layout=Rows(-1,0);Put(section,layout,1);var columns=Cols(-1,24,-1);
+            available.ItemTemplate=PackTemplate(true);active.ItemTemplate=PackTemplate(false);
             var left=Rows(0,-1);Put(left,Text("Библиотека",15,Ink,true),0);available.Margin=new Thickness(0,13,0,0);Put(left,available,1);Put(columns,left,0);
-            var controls=new StackPanel {VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(8)};
-            var enable=Button("→",()=>TogglePack(true));enable.Padding=new Thickness(7,12,7,12);controls.Children.Add(enable);
-            var disable=Button("←",()=>TogglePack(false));disable.Margin=new Thickness(0,9,0,0);disable.Padding=enable.Padding;controls.Children.Add(disable);Put(columns,controls,0,1);
             var right=Rows(0,-1);Put(right,Text("Активные",15,Accent,true),0);active.Margin=new Thickness(0,13,0,0);Put(right,active,1);Put(columns,right,0,2);Put(layout,columns,0);
             var actions=new StackPanel {Orientation=Orientation.Horizontal,Margin=new Thickness(0,17,0,0)};
             actions.Children.Add(Button("Добавить .mcpack",ImportPack,true));
             foreach(var pair in new[]{Tuple.Create("Удалить",(Action)RemovePack),Tuple.Create("Выше ↑",(Action)(()=>MovePack(-1))),Tuple.Create("Ниже ↓",(Action)(()=>MovePack(1)))})
             {var b=Button(pair.Item1,pair.Item2);b.Margin=new Thickness(9,0,0,0);actions.Children.Add(b);}
             Put(layout,actions,1);RefreshPacks();
+        }
+        DataTemplate PackTemplate(bool enabled)
+        {
+            var row=new FrameworkElementFactory(typeof(DockPanel));
+            var action=new FrameworkElementFactory(typeof(Button));
+            action.SetValue(DockPanel.DockProperty,Dock.Right);
+            action.SetValue(ContentControl.ContentProperty,enabled?"Активировать":"Деактивировать");
+            action.SetValue(Control.FontSizeProperty,11.0);
+            action.SetValue(Control.PaddingProperty,new Thickness(11,8,11,8));
+            action.SetValue(FrameworkElement.MarginProperty,new Thickness(12,0,0,0));
+            action.SetValue(FrameworkElement.VerticalAlignmentProperty,VerticalAlignment.Center);
+            action.AddHandler(System.Windows.Controls.Primitives.ButtonBase.ClickEvent,new RoutedEventHandler((sender,e)=>{
+                e.Handled=true;TogglePack(((FrameworkElement)sender).DataContext as Pack,enabled);
+            }));
+            row.AppendChild(action);
+            var name=new FrameworkElementFactory(typeof(TextBlock));
+            name.SetBinding(TextBlock.TextProperty,new System.Windows.Data.Binding("."));
+            name.SetBinding(FrameworkElement.ToolTipProperty,new System.Windows.Data.Binding("."));
+            name.SetValue(TextBlock.TextTrimmingProperty,TextTrimming.CharacterEllipsis);
+            name.SetValue(FrameworkElement.VerticalAlignmentProperty,VerticalAlignment.Center);
+            row.AppendChild(name);
+            return new DataTemplate(typeof(Pack)){VisualTree=row};
         }
         void RefreshPacks(){available.ItemsSource=null;active.ItemsSource=null;available.ItemsSource=Store.State.Packs.Where(p=>!p.Active).ToList();active.ItemsSource=Store.State.Packs.Where(p=>p.Active).ToList();}
         void ImportPack()
@@ -327,9 +347,9 @@ namespace CollapseLauncher
             try{Store.Exclusive(()=>{foreach(string file in picker.FileNames)Library.ImportPack(file);});RefreshPacks();SetNotice("Ресурспаки добавлены.");}
             catch(Exception e){RefreshPacks();SetNotice(e.Message,true);}
         }
-        void TogglePack(bool enabled)
+        void TogglePack(Pack pack,bool enabled)
         {
-            if(!RequireIdle())return;var pack=(enabled?available.SelectedItem:active.SelectedItem) as Pack;if(pack==null)return;
+            if(!RequireIdle()||pack==null)return;
             try{Store.Exclusive(()=>{pack.Active=enabled;try{Library.Sync();Store.Save();}catch{pack.Active=!enabled;throw;}});RefreshPacks();SetNotice(enabled?"Ресурспак включён.":"Ресурспак выключен.");}
             catch(Exception e){RefreshPacks();SetNotice(e.Message,true);}
         }
