@@ -345,6 +345,17 @@ namespace CollapseLauncher
                     text=SetOption(text,"game_skintypefull",skin.Id+"_selected");
                     text=SetOption(text,"game_lastcustomskinnew",skin.Id+"_selected");
                 }
+                else
+                {
+                    // Remove only this launcher's selection; leave other game options intact.
+                    var ours=new HashSet<string>(Store.State.Skins.Select(s=>s.Id+"_selected"),StringComparer.OrdinalIgnoreCase);
+                    string newline=text.Contains("\r\n")?"\r\n":"\n";
+                    text=String.Join(newline,text.Replace("\r\n","\n").Split('\n').Where(line=>{
+                        int colon=line.IndexOf(':');if(colon<0)return true;
+                        string key=line.Substring(0,colon);
+                        return (key!="game_skintypefull"&&key!="game_lastcustomskinnew")||!ours.Contains(line.Substring(colon+1));
+                    }));
+                }
                 Store.Atomic(options,Encoding.UTF8.GetBytes(text));
             }
         }

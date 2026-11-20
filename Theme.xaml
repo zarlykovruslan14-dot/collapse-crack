@@ -113,7 +113,7 @@
      <ContentPresenter Margin="16,13,40,13" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}" VerticalAlignment="Center"/>
      <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
       <Border Background="#102032" BorderBrush="#3E6272" BorderThickness="1" CornerRadius="12" Margin="0,6,0,0" Padding="6" MinWidth="{Binding ActualWidth,RelativeSource={RelativeSource TemplatedParent}}">
-       <ScrollViewer MaxHeight="330"><ItemsPresenter/></ScrollViewer>
+       <ScrollViewer MaxHeight="330" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" CanContentScroll="False"><ItemsPresenter/></ScrollViewer>
       </Border>
      </Popup>
     </Grid>
@@ -140,7 +140,25 @@
   <Setter Property="Height" Value="5"/>
  </Style>
  <Style TargetType="ScrollBar">
-  <Setter Property="Width" Value="9"/>
+  <Setter Property="Width" Value="14"/>
   <Setter Property="Background" Value="Transparent"/>
+  <Setter Property="Template"><Setter.Value>
+   <ControlTemplate TargetType="ScrollBar">
+    <Grid Background="Transparent">
+     <Track x:Name="PART_Track" Orientation="{TemplateBinding Orientation}" IsDirectionReversed="True"
+            Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}" ViewportSize="{TemplateBinding ViewportSize}"
+            Value="{Binding Value,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}">
+      <Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageUpCommand" Focusable="False"><RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></RepeatButton.Template></RepeatButton></Track.DecreaseRepeatButton>
+      <Track.Thumb><Thumb MinHeight="28"><Thumb.Template><ControlTemplate TargetType="Thumb">
+       <Border x:Name="Grip" Background="#638C9D" CornerRadius="5" Margin="3,1"/>
+       <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Grip" Property="Background" Value="#50E2DB"/></Trigger><Trigger Property="IsDragging" Value="True"><Setter TargetName="Grip" Property="Background" Value="#7BF2BF"/></Trigger></ControlTemplate.Triggers>
+      </ControlTemplate></Thumb.Template></Thumb></Track.Thumb>
+      <Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageDownCommand" Focusable="False"><RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></RepeatButton.Template></RepeatButton></Track.IncreaseRepeatButton>
+     </Track>
+    </Grid>
+    <ControlTemplate.Triggers><Trigger Property="Orientation" Value="Horizontal"><Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/></Trigger></ControlTemplate.Triggers>
+   </ControlTemplate>
+  </Setter.Value></Setter>
+  <Style.Triggers><Trigger Property="Orientation" Value="Horizontal"><Setter Property="Width" Value="Auto"/><Setter Property="Height" Value="14"/></Trigger></Style.Triggers>
  </Style>
 </ResourceDictionary>

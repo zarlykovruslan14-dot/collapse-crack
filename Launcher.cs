@@ -11,12 +11,13 @@ using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using Path=System.IO.Path;
 using Microsoft.Win32;
 
-[assembly:AssemblyVersion("6.0.1.0")]
-[assembly:AssemblyFileVersion("6.0.1.0")]
+[assembly:AssemblyVersion("6.1.0.0")]
+[assembly:AssemblyFileVersion("6.1.0.0")]
 
 namespace CollapseLauncher
 {
@@ -44,6 +45,12 @@ namespace CollapseLauncher
         readonly TextBlock notice=new TextBlock();
         readonly TextBlock searchText=new TextBlock();
         readonly ProgressBar searchBar=new ProgressBar();
+        readonly Border activity=new Border();
+        readonly TextBlock activityTitle=new TextBlock(),activityDetail=new TextBlock();
+        readonly ProgressBar activityBar=new ProgressBar();
+        string operation="";
+        Grid skinPreviewPanel;
+        string previewSkinId;
         readonly Dictionary<string,Button> navigation=new Dictionary<string,Button>();
         readonly ListBox installed=new ListBox(),available=new ListBox(),active=new ListBox(),skins=new ListBox();
         readonly ComboBox selector=new ComboBox();
@@ -54,7 +61,8 @@ namespace CollapseLauncher
         BitmapSource defaultBackground;
         readonly Button play;
         string pageName;
-        bool busy,searching,updating;
+        bool busy,searching,updating,savePending;
+        readonly List<Installation> pendingInstallations=new List<Installation>();
         Process game;
         List<ReleaseItem> releases=new List<ReleaseItem>();
 
@@ -128,17 +136,25 @@ namespace CollapseLauncher
             Put(sidebar,routes,1);
             var links=new StackPanel {Margin=new Thickness(12,0,12,12)};
             links.Children.Add(Button("Канал проекта  ↗",()=>Open("https://t.me/mcbeforandroid")));
-            var credit=Text("@bestphpp  ·  6.0",11,Muted);credit.Margin=new Thickness(8,12,0,0);links.Children.Add(credit);Put(sidebar,links,2);
+            var credit=Text("@bestphpp  ·  6.1",11,Muted);credit.Margin=new Thickness(8,12,0,0);links.Children.Add(credit);Put(sidebar,links,2);
 
             var backdrop=new Grid {Background=new LinearGradientBrush(Color.FromRgb(11,27,40),Color.FromRgb(27,39,57),30),ClipToBounds=true};
             backdrop.Children.Add(wallpaper);
             backdrop.Children.Add(new Border {Background=new SolidColorBrush(Color.FromArgb(88,5,13,23))});
-            content.Margin=new Thickness(30,24,30,24);backdrop.Children.Add(content);Put(body,backdrop,0,1);
+            var workspace=Rows(-1,0);content.Margin=new Thickness(30,24,30,24);Put(workspace,content,0);
+            var activityLayout=Cols(42,-1);var ring=new Ellipse {Width=25,Height=25,Stroke=Accent,StrokeThickness=3,StrokeDashArray=new DoubleCollection(new[]{4.0,2.0}),RenderTransformOrigin=new Point(.5,.5)};
+            var rotation=new RotateTransform();ring.RenderTransform=rotation;
+            activity.IsVisibleChanged+=(s,e)=>{if(activity.IsVisible){var animation=new DoubleAnimation(0,360,TimeSpan.FromSeconds(1.2)){RepeatBehavior=RepeatBehavior.Forever};Timeline.SetDesiredFrameRate(animation,30);rotation.BeginAnimation(RotateTransform.AngleProperty,animation);}else rotation.BeginAnimation(RotateTransform.AngleProperty,null);};
+            Put(activityLayout,ring,0);var status=new StackPanel();activityTitle.FontSize=16;activityTitle.FontWeight=FontWeights.SemiBold;activityTitle.Foreground=Ink;
+            activityDetail.FontSize=12;activityDetail.Foreground=Muted;activityDetail.Margin=new Thickness(0,5,0,9);activityDetail.TextTrimming=TextTrimming.CharacterEllipsis;
+            activityBar.Height=9;status.Children.Add(activityTitle);status.Children.Add(activityDetail);status.Children.Add(activityBar);Put(activityLayout,status,0,1);
+            activity.Child=activityLayout;activity.Background=Hex("#F0142938");activity.BorderBrush=Accent;activity.BorderThickness=new Thickness(1);activity.CornerRadius=new CornerRadius(16);activity.Padding=new Thickness(16);activity.Margin=new Thickness(30,0,30,16);activity.Visibility=Visibility.Collapsed;
+            Put(workspace,activity,1);backdrop.Children.Add(workspace);Put(body,backdrop,0,1);
             var bottom=Cols(-1,0);bottom.Background=Hex("#0E1722");
             notice.Foreground=Muted;notice.FontSize=11;notice.Margin=new Thickness(19,0,12,0);notice.VerticalAlignment=VerticalAlignment.Center;
             notice.TextTrimming=TextTrimming.CharacterEllipsis;
             notice.MouseLeftButtonDown+=(s,e)=>{if(!String.IsNullOrWhiteSpace(notice.ToolTip as string))MessageBox.Show(this,(string)notice.ToolTip,"Collapse");};
-            Put(bottom,notice,0);var build=Text("COLLAPSE  6.0",10,Muted,true);build.Margin=new Thickness(12,0,19,0);build.VerticalAlignment=VerticalAlignment.Center;
+            Put(bottom,notice,0);var build=Text("COLLAPSE  6.1",10,Muted,true);build.Margin=new Thickness(12,0,19,0);build.VerticalAlignment=VerticalAlignment.Center;
             Put(bottom,build,0,1);Put(outer,bottom,2);
 
             play=Button("Играть",Launch,true);play.FontSize=23;play.Padding=new Thickness(30,19,30,19);
@@ -149,6 +165,7 @@ namespace CollapseLauncher
             installed.SelectionChanged+=(s,e)=>{var i=installed.SelectedItem as Installation;if(i!=null)selector.SelectedItem=i;};
             available.SelectionChanged+=(s,e)=>{if(available.SelectedItem!=null)active.SelectedItem=null;};
             active.SelectionChanged+=(s,e)=>{if(active.SelectedItem!=null)available.SelectedItem=null;};
+            skins.SelectionChanged+=(s,e)=>{var skin=skins.SelectedItem as Skin;if(pageName=="Скины"&&skin!=null){previewSkinId=skin.Id;UpdateSkinPreview(skin);}};
             filter.TextChanged+=(s,e)=>RenderCatalog();
             RefreshInstallations();ApplyWallpaper();ShowPage("Играть");
             if(live)Loaded+=async(s,e)=>{Scan();await LoadCatalog();await CheckUpdate(false);};
@@ -156,7 +173,33 @@ namespace CollapseLauncher
         void ToggleMax(){WindowState=WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;}
         static void Open(string value){Process.Start(new ProcessStartInfo(value){UseShellExecute=true});}
         void SetNotice(string value,bool error=false){notice.Text=value;notice.ToolTip=value;notice.Foreground=error?Hex("#FFC0AD"):Muted;}
-        void Progress(string value){SetNotice(value);}
+        void Progress(string value)
+        {
+            SetNotice(value);activityDetail.Text=value;
+            var match=System.Text.RegularExpressions.Regex.Match(value,@"(\d{1,3})\s*%");
+            activityBar.IsIndeterminate=!match.Success;
+            if(match.Success)activityBar.Value=Math.Min(100,Int32.Parse(match.Groups[1].Value));
+        }
+        void Activity(string title)
+        {
+            operation=title??"";activity.Visibility=title==null?Visibility.Collapsed:Visibility.Visible;
+            activityTitle.Text=operation;activityDetail.Text="Можно переходить между вкладками";activityBar.IsIndeterminate=true;
+        }
+        async Task LibraryWork(string title,Action action,Action finished=null)
+        {
+            busy=true;Activity(title);UpdatePlay();
+            try{await Task.Run(()=>Store.Exclusive(action));if(finished!=null)finished();}
+            catch(Exception e){SetNotice(e.Message,true);}
+            finally{FinishWork();}
+        }
+        void FinishWork()
+        {
+            busy=false;Activity(null);
+            foreach(var item in pendingInstallations)
+                if(!Store.State.Installations.Any(i=>String.Equals(i.Folder,item.Folder,StringComparison.OrdinalIgnoreCase)))Store.State.Installations.Add(item);
+            if(pendingInstallations.Count>0){pendingInstallations.Clear();savePending=true;RefreshInstallations();}
+            if(savePending){savePending=false;TrySave();}UpdatePlay();
+        }
         bool RequireIdle()
         {
             if(busy||updating){SetNotice("Дождись завершения текущей операции.");return false;}
@@ -164,10 +207,9 @@ namespace CollapseLauncher
             {SetNotice("Закрой Minecraft перед изменением файлов игры.",true);return false;}
             return true;
         }
-        void TrySave(){try{Store.Save();}catch(Exception e){SetNotice(e.Message,true);}}
+        void TrySave(){if(busy||updating){savePending=true;return;}try{Store.Save();}catch(Exception e){SetNotice(e.Message,true);}}
         internal void ShowPage(string key)
         {
-            if(busy||updating)return;
             pageName=key;content.Children.Clear();
             foreach(var n in navigation){n.Value.Background=Hex(n.Key==key?"#194752":"#101F2D");n.Value.Foreground=n.Key==key?Accent:Muted;n.Value.BorderBrush=Hex(n.Key==key?"#42ADBA":"#233C4F");}
             foreach(var c in new UIElement[]{selector,play,installed,available,active,skins,filter,catalog,searchText,searchBar})Detach(c);
@@ -207,7 +249,7 @@ namespace CollapseLauncher
             var sub=Text("Версия для запуска",13,Muted);sub.Margin=new Thickness(0,0,0,17);Put(card,sub,1);
             selector.Margin=new Thickness(0,0,0,15);Put(card,selector,2);Put(card,play,3);Put(center,Card(card,28),1);
             var bottom=Rows(0,0);Put(bottom,SearchStatus(),0);var row=Cols(-1,12,-1,12,-1);
-            Put(row,InfoTile("Ресурспаки",Store.State.Packs.Count(p=>p.Active)+" активных",()=>ShowPage("Ресурспаки")),0);
+            Put(row,InfoTile("Ресурспаки",Store.State.Packs.ToArray().Count(p=>p.Active)+" активных",()=>ShowPage("Ресурспаки")),0);
             Put(row,InfoTile("Скин",Store.State.SelectedSkin==null?"Стандартный":"Выбран",()=>ShowPage("Скины")),0,2);
             Put(row,InfoTile("VSync",Store.State.DisableVsync?"Выключен":"Включён",()=>ShowPage("Настройки")),0,4);Put(bottom,row,1);Put(g,bottom,2);UpdatePlay();
         }
@@ -230,8 +272,10 @@ namespace CollapseLauncher
             {
                 await Task.Run(()=>Collapse.Scan((folder,version)=>Dispatcher.BeginInvoke(new Action(()=>{
                     if(Store.State.Installations.Any(i=>String.Equals(i.Folder,folder,StringComparison.OrdinalIgnoreCase)))return;
+                    if(busy||updating){pendingInstallations.Add(new Installation {Folder=folder,Version=version});return;}
                     Store.State.Installations.Add(new Installation {Folder=folder,Version=version});RefreshInstallations();
                 }))));
+                while(busy||updating)await Task.Delay(200);
                 Store.State.Installations.RemoveAll(i=>Collapse.Client(i.Folder)==null);TrySave();RefreshInstallations();
             }
             catch(Exception e){SetNotice("Поиск остановлен: "+e.Message,true);}
@@ -239,6 +283,7 @@ namespace CollapseLauncher
         }
         void AddFolder()
         {
+            if(!RequireIdle())return;
             using(var picker=new System.Windows.Forms.FolderBrowserDialog {Description="Папка Minecraft",ShowNewFolderButton=false})
             {
                 if(picker.ShowDialog()!=System.Windows.Forms.DialogResult.OK)return;
@@ -256,19 +301,19 @@ namespace CollapseLauncher
         {
             if(game!=null)try{if(game.HasExited){game.Dispose();game=null;timer.Stop();}}catch(InvalidOperationException){game=null;timer.Stop();}
             if(play==null)return;
-            play.Content=busy?"Запускается…":game!=null?"Запущен":"Играть";play.IsEnabled=!busy&&!updating&&game==null&&selector.SelectedItem!=null;
+            play.Content=busy?(operation.StartsWith("Запуск")?"Запускается…":"Выполняется операция…"):game!=null?"Запущен":"Играть";play.IsEnabled=!busy&&!updating&&game==null&&selector.SelectedItem!=null;
         }
         async void Launch()
         {
             if(!RequireIdle())return;var i=selector.SelectedItem as Installation;if(i==null)return;
-            busy=true;UpdatePlay();
+            busy=true;Activity("Запуск Bedrock "+i.Version);UpdatePlay();
             try
             {
                 SetNotice("Применяем настройки профиля…");await Task.Run(()=>Store.Exclusive(()=>Library.Sync()));
-                int pid=await BedrockVersions.Launch(i.Folder,new Progress<string>(Progress));game=Process.GetProcessById(pid);timer.Start();SetNotice("Запущен Bedrock "+i.Version);
+                var progress=new Progress<string>(Progress);int pid=await Task.Run(()=>BedrockVersions.Launch(i.Folder,progress));game=Process.GetProcessById(pid);timer.Start();SetNotice("Запущен Bedrock "+i.Version);
             }
             catch(Exception e){SetNotice("Не удалось запустить: "+e.Message,true);}
-            finally{busy=false;UpdatePlay();}
+            finally{FinishWork();}
         }
         void Versions()
         {
@@ -280,7 +325,7 @@ namespace CollapseLauncher
         }
         async Task LoadCatalog()
         {
-            try{releases=await Downloads.Catalog();RenderCatalog();SetNotice("Каталог обновлён · "+releases.Count+" версий");}
+            try{releases=await Task.Run(()=>Downloads.Catalog());RenderCatalog();SetNotice("Каталог обновлён · "+releases.Count+" версий");}
             catch(Exception e){SetNotice("Каталог недоступен: "+e.Message,true);}
         }
         void RenderCatalog()
@@ -299,10 +344,10 @@ namespace CollapseLauncher
         }
         async void Install(ReleaseItem release)
         {
-            if(!RequireIdle())return;busy=true;UpdatePlay();
-            try{string folder=await Downloads.Install(release,new Progress<string>(Progress));RegisterInstall(folder);RenderCatalog();SetNotice("Bedrock "+release.Version+" готова к запуску");}
+            if(!RequireIdle())return;busy=true;Activity("Загрузка Bedrock "+release.Version);UpdatePlay();
+            try{var progress=new Progress<string>(Progress);string folder=await Task.Run(()=>Downloads.Install(release,progress));RegisterInstall(folder);RenderCatalog();SetNotice("Bedrock "+release.Version+" готова к запуску");}
             catch(Exception e){SetNotice("Не удалось установить: "+e.Message,true);}
-            finally{busy=false;UpdatePlay();}
+            finally{FinishWork();}
         }
         void Packs()
         {
@@ -339,72 +384,73 @@ namespace CollapseLauncher
             row.AppendChild(name);
             return new DataTemplate(typeof(Pack)){VisualTree=row};
         }
-        void RefreshPacks(){available.ItemsSource=null;active.ItemsSource=null;available.ItemsSource=Store.State.Packs.Where(p=>!p.Active).ToList();active.ItemsSource=Store.State.Packs.Where(p=>p.Active).ToList();}
-        void ImportPack()
+        void RefreshPacks(){available.ItemsSource=null;active.ItemsSource=null;var packs=Store.State.Packs.ToArray();available.ItemsSource=packs.Where(p=>!p.Active).ToList();active.ItemsSource=packs.Where(p=>p.Active).ToList();}
+        async void ImportPack()
         {
             if(!RequireIdle())return;var picker=new OpenFileDialog {Filter="Наборы ресурсов (*.mcpack;*.zip)|*.mcpack;*.zip",Multiselect=true};
             if(picker.ShowDialog(this)!=true)return;
-            try{Store.Exclusive(()=>{foreach(string file in picker.FileNames)Library.ImportPack(file);});RefreshPacks();SetNotice("Ресурспаки добавлены.");}
-            catch(Exception e){RefreshPacks();SetNotice(e.Message,true);}
+            await LibraryWork("Добавляем ресурспаки",()=>{foreach(string file in picker.FileNames)Library.ImportPack(file);},()=>SetNotice("Ресурспаки добавлены."));RefreshPacks();
         }
-        void TogglePack(Pack pack,bool enabled)
+        async void TogglePack(Pack pack,bool enabled)
         {
             if(!RequireIdle()||pack==null)return;
-            try{Store.Exclusive(()=>{pack.Active=enabled;try{Library.Sync();Store.Save();}catch{pack.Active=!enabled;throw;}});RefreshPacks();SetNotice(enabled?"Ресурспак включён.":"Ресурспак выключен.");}
-            catch(Exception e){RefreshPacks();SetNotice(e.Message,true);}
+            await LibraryWork(enabled?"Включаем ресурспак":"Выключаем ресурспак",()=>{pack.Active=enabled;try{Library.Sync();Store.Save();}catch{pack.Active=!enabled;throw;}},()=>SetNotice(enabled?"Ресурспак включён.":"Ресурспак выключен."));RefreshPacks();
         }
-        void RemovePack()
+        async void RemovePack()
         {
             if(!RequireIdle())return;var pack=(available.SelectedItem??active.SelectedItem) as Pack;if(pack==null)return;
-            try
-            {
-                Store.Exclusive(()=>{bool prior=pack.Active;pack.Active=false;try{Library.Sync();}catch{pack.Active=prior;throw;}
+            await LibraryWork("Удаляем ресурспак",()=>{bool prior=pack.Active;pack.Active=false;try{Library.Sync();}catch{pack.Active=prior;throw;}
                     Store.State.Packs.Remove(pack);try{Store.Save();}catch{Store.State.Packs.Add(pack);throw;}
-                    Library.RemoveCopies(pack);Store.DeleteOwned(pack.Folder,Path.Combine(Store.Root,"Packs"));});RefreshPacks();SetNotice("Ресурспак удалён из библиотеки.");
-            }
-            catch(Exception e){RefreshPacks();SetNotice(e.Message,true);}
+                    Library.RemoveCopies(pack);Store.DeleteOwned(pack.Folder,Path.Combine(Store.Root,"Packs"));},()=>SetNotice("Ресурспак удалён из библиотеки."));RefreshPacks();
         }
-        void MovePack(int direction)
+        async void MovePack(int direction)
         {
             if(!RequireIdle())return;var pack=active.SelectedItem as Pack;if(pack==null)return;
             var all=Store.State.Packs;int index=all.IndexOf(pack),next=index+direction;if(next<0||next>=all.Count)return;
-            var old=all.ToList();try{all.RemoveAt(index);all.Insert(next,pack);Library.Sync();Store.Save();RefreshPacks();active.SelectedItem=pack;}
-            catch(Exception e){Store.State.Packs=old;RefreshPacks();SetNotice(e.Message,true);}
+            var old=all.ToList();await LibraryWork("Меняем порядок ресурспаков",()=>{try{all.RemoveAt(index);all.Insert(next,pack);Library.Sync();Store.Save();}catch{Store.State.Packs=old;throw;}});RefreshPacks();active.SelectedItem=pack;
         }
         void Skins()
         {
-            var section=Section("Скины","PNG-скины в общей библиотеке для найденных профилей Bedrock.");var columns=Cols(245,22,-1);Put(section,columns,1);
-            var preview=Rows(-1,0);var current=Store.State.Skins.FirstOrDefault(s=>s.Id==Store.State.SelectedSkin);
-            Put(preview,current==null?(UIElement)Text("Добавь свой PNG-скин",16,Muted,true):SkinPreview(current.FilePath),0);
-            var name=Text(current==null?"Стандартный скин":current.Name,18,Ink,true);name.HorizontalAlignment=HorizontalAlignment.Center;Put(preview,name,1);Put(columns,Card(preview),0);
-            var right=Rows(-1,0,0);Put(columns,right,0,2);skins.ItemsSource=null;skins.ItemsSource=Store.State.Skins;skins.SelectedItem=current;Put(right,skins,0);
+            var section=Section("Скины","Перетаскивай модель мышью, чтобы рассмотреть её со всех сторон.");var columns=Cols(285,22,-1);Put(section,columns,1);
+            var list=Store.State.Skins.ToArray();var current=list.FirstOrDefault(s=>s.Id==Store.State.SelectedSkin)??list.FirstOrDefault(s=>s.Id==previewSkinId)??list.FirstOrDefault();
+            skinPreviewPanel=Rows(-1,0);UpdateSkinPreview(current);Put(columns,Card(skinPreviewPanel),0);
+            var right=Rows(-1,0,0);Put(columns,right,0,2);skins.ItemTemplate=SkinTemplate();skins.ItemsSource=null;skins.ItemsSource=Store.State.Skins.ToList();skins.SelectedItem=current;Put(right,skins,0);
             var controls=new StackPanel {Orientation=Orientation.Horizontal,Margin=new Thickness(0,13,0,0)};
-            controls.Children.Add(Button("Добавить PNG",ImportSkin,true));var use=Button("Применить",UseSkin);use.Margin=new Thickness(8,0,0,0);controls.Children.Add(use);
-            var del=Button("Удалить",DeleteSkin);del.Margin=use.Margin;controls.Children.Add(del);Put(right,controls,1);
+            controls.Children.Add(Button("Добавить PNG",ImportSkin,true));
+            var del=Button("Удалить",DeleteSkin);del.Margin=new Thickness(8,0,0,0);controls.Children.Add(del);Put(right,controls,1);
             var tip=Text("Первый выбор проверь в гардеробе Minecraft. Набор Collapse появляется в «Классических скинах».",11,Muted);tip.Margin=new Thickness(0,15,0,0);Put(right,tip,2);
         }
-        UIElement SkinPreview(string file)
+        void UpdateSkinPreview(Skin skin)
         {
-            var bitmap=new BitmapImage();bitmap.BeginInit();bitmap.CacheOption=BitmapCacheOption.OnLoad;bitmap.UriSource=new Uri(file);bitmap.EndInit();bitmap.Freeze();
-            int factor=bitmap.PixelWidth/64;var canvas=new Canvas {Width=128,Height=256,HorizontalAlignment=HorizontalAlignment.Center,VerticalAlignment=VerticalAlignment.Center};
-            Action<int,int,int,int,int,int,int,int> part=(x,y,w,h,dx,dy,dw,dh)=>{
-                var image=new Image {Source=new CroppedBitmap(bitmap,new Int32Rect(x*factor,y*factor,w*factor,h*factor)),Width=dw,Height=dh};
-                RenderOptions.SetBitmapScalingMode(image,BitmapScalingMode.NearestNeighbor);Canvas.SetLeft(image,dx);Canvas.SetTop(image,dy);canvas.Children.Add(image);};
-            part(8,8,8,8,32,0,64,64);part(20,20,8,12,32,64,64,96);part(44,20,4,12,0,64,32,96);part(44,20,4,12,96,64,32,96);part(4,20,4,12,32,160,32,96);
-            if(bitmap.PixelHeight>=64*factor)part(20,52,4,12,64,160,32,96);else part(4,20,4,12,64,160,32,96);return canvas;
+            if(skinPreviewPanel==null)return;skinPreviewPanel.Children.Clear();
+            Put(skinPreviewPanel,skin==null?(UIElement)Text("Добавь свой PNG-скин",16,Muted,true):new SkinView(skin.FilePath,skin.Slim),0);
+            var name=Text(skin==null?"Стандартный скин":skin.Name,18,Ink,true);name.HorizontalAlignment=HorizontalAlignment.Center;Put(skinPreviewPanel,name,1);
         }
-        void ImportSkin()
+        DataTemplate SkinTemplate()
+        {
+            var row=new FrameworkElementFactory(typeof(DockPanel));var action=new FrameworkElementFactory(typeof(Button));
+            action.SetValue(DockPanel.DockProperty,Dock.Right);action.SetValue(Control.FontSizeProperty,11.0);
+            action.SetValue(Control.PaddingProperty,new Thickness(10,8,10,8));action.SetValue(FrameworkElement.MarginProperty,new Thickness(10,0,0,0));
+            action.AddHandler(FrameworkElement.LoadedEvent,new RoutedEventHandler((s,e)=>{var button=(Button)s;var skin=button.DataContext as Skin;button.Content=skin!=null&&skin.Id==Store.State.SelectedSkin?"Выключить скин":"Включить скин";}));
+            action.AddHandler(System.Windows.Controls.Primitives.ButtonBase.ClickEvent,new RoutedEventHandler((s,e)=>{e.Handled=true;var skin=((FrameworkElement)s).DataContext as Skin;if(skin!=null)ToggleSkin(skin,skin.Id!=Store.State.SelectedSkin);}));row.AppendChild(action);
+            var name=new FrameworkElementFactory(typeof(TextBlock));name.SetBinding(TextBlock.TextProperty,new System.Windows.Data.Binding("."));name.SetBinding(FrameworkElement.ToolTipProperty,new System.Windows.Data.Binding("."));
+            name.SetValue(TextBlock.TextTrimmingProperty,TextTrimming.CharacterEllipsis);name.SetValue(FrameworkElement.VerticalAlignmentProperty,VerticalAlignment.Center);row.AppendChild(name);
+            return new DataTemplate(typeof(Skin)){VisualTree=row};
+        }
+        async void ImportSkin()
         {
             if(!RequireIdle())return;var picker=new OpenFileDialog {Filter="PNG-скины (*.png)|*.png"};if(picker.ShowDialog(this)!=true)return;
             var model=MessageBox.Show(this,"Использовать тонкие руки Slim? Для Classic выбери «Нет».","Модель скина",MessageBoxButton.YesNoCancel);
             if(model==MessageBoxResult.Cancel)return;
-            try{Store.Exclusive(()=>Library.ImportSkin(picker.FileName,model==MessageBoxResult.Yes));ShowPage("Скины");}catch(Exception e){SetNotice(e.Message,true);}
+            string prior=Store.State.SelectedSkin;
+            await LibraryWork("Добавляем и включаем скин",()=>{var skin=Library.ImportSkin(picker.FileName,model==MessageBoxResult.Yes);Store.State.SelectedSkin=skin.Id;try{Library.Sync();Store.Save();}catch{Store.State.SelectedSkin=prior;Store.Save();throw;}},()=>SetNotice("Скин добавлен и включён."));
+            if(pageName=="Скины")ShowPage("Скины");
         }
-        void UseSkin()
+        async void ToggleSkin(Skin skin,bool enabled)
         {
-            if(!RequireIdle())return;var skin=skins.SelectedItem as Skin;if(skin==null)return;string prior=Store.State.SelectedSkin;
-            try{Store.State.SelectedSkin=skin.Id;int count=0;Store.Exclusive(()=>{count=Library.Sync();Store.Save();});ShowPage("Скины");SetNotice("Скин установлен в профили: "+count+". Проверь выбор в гардеробе.");}
-            catch(Exception e){Store.State.SelectedSkin=prior;SetNotice(e.Message,true);}
+            if(!RequireIdle()||skin==null)return;string prior=Store.State.SelectedSkin;
+            await LibraryWork(enabled?"Включаем скин":"Выключаем скин",()=>{Store.State.SelectedSkin=enabled?skin.Id:null;try{Library.Sync();Store.Save();}catch{Store.State.SelectedSkin=prior;throw;}},()=>SetNotice(enabled?"Скин включён.":"Скин выключен."));
+            if(pageName=="Скины")ShowPage("Скины");
         }
         void DeleteSkin()
         {
@@ -426,8 +472,8 @@ namespace CollapseLauncher
         {
             var section=Section("Настройки","Производительность, фон и обновления.");var stack=new StackPanel();
             var fps=new CheckBox {Content="Отключить VSync и ограничение FPS",IsChecked=Store.State.DisableVsync};
-            fps.Click+=(s,e)=>{if(!RequireIdle()){fps.IsChecked=Store.State.DisableVsync;return;}bool old=Store.State.DisableVsync;
-                try{Store.State.DisableVsync=fps.IsChecked==true;Library.Sync();Store.Save();SetNotice("Настройка FPS сохранена.");}catch(Exception error){Store.State.DisableVsync=old;fps.IsChecked=old;SetNotice(error.Message,true);}};
+            fps.Click+=async(s,e)=>{if(!RequireIdle()){fps.IsChecked=Store.State.DisableVsync;return;}bool old=Store.State.DisableVsync,value=fps.IsChecked==true;
+                await LibraryWork("Применяем настройку FPS",()=>{Store.State.DisableVsync=value;try{Library.Sync();Store.Save();}catch{Store.State.DisableVsync=old;throw;}},()=>SetNotice("Настройка FPS сохранена."));fps.IsChecked=Store.State.DisableVsync;};
             stack.Children.Add(fps);stack.Children.Add(Text("Применяется к настройкам найденных профилей и повторно перед запуском.",12,Muted));
             var backgrounds=new StackPanel {Orientation=Orientation.Horizontal,Margin=new Thickness(0,23,0,20)};backgrounds.Children.Add(Button("Выбрать фон…",ChooseWallpaper));
             var reset=Button("Сбросить фон",()=>{Store.State.Background=null;TrySave();ApplyWallpaper();});reset.Margin=new Thickness(9,0,0,0);backgrounds.Children.Add(reset);stack.Children.Add(backgrounds);
@@ -464,11 +510,11 @@ namespace CollapseLauncher
                 var release=await Updater.Check();if(release==null){if(manual)SetNotice("Установлена последняя версия.");return;}
                 if(!manual&&!Store.State.AutoUpdate){SetNotice("Доступна новая версия · открой настройки для обновления.");return;}
                 if(game!=null||busy||updating){SetNotice("Обновление доступно после закрытия игры.");return;}
-                updating=true;UpdatePlay();string path=await Updater.Download(release,new Progress<string>(Progress));
+                updating=true;Activity("Обновление лаунчера");UpdatePlay();var progress=new Progress<string>(Progress);string path=await Task.Run(()=>Updater.Download(release,progress));
                 Updater.StartReplacement(path);updating=false;Close();
             }
             catch(Exception e){if(manual||updating)SetNotice("Обновление не завершено: "+e.Message,true);}
-            finally{updating=false;UpdatePlay();}
+            finally{updating=false;Activity(null);UpdatePlay();}
         }
     }
 }

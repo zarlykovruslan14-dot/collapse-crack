@@ -95,10 +95,8 @@ namespace CollapseLauncher
                     string package=Path.Combine(Store.Root,"Downloads","Minecraft-"+item.Version+".msixvc");
                     Directory.CreateDirectory(Path.GetDirectoryName(package));
                     if(!File.Exists(package)) await Fetch(item.Url,package,progress);
-                    progress.Report("Подготовка пакета службами Xbox…");
-                    string source=await StageGdk(package,item.Version);
-                    progress.Report("Перенос "+item.Version+" в библиотеку…");
-                    await Task.Run(()=>Store.CopyTree(source,stage));
+                    progress.Report("Подготовка службами Xbox · подтверди запрос Windows…");
+                    await StageGdk(package,item.Version,stage);
                 }
                 if(Collapse.Client(stage)==null)throw new IOException("В загруженной сборке не найден Minecraft.Windows.exe.");
                 string actual=Collapse.Version(Collapse.Client(stage));
@@ -146,34 +144,60 @@ namespace CollapseLauncher
             finally {if(File.Exists(part))File.Delete(part);}
         }
 
-        static async Task<string> StageGdk(string file,string version)
+        static async Task StageGdk(string file,string version,string destination)
         {
-            // Stage uses Microsoft's installed content keys. It does not remove existing packages.
-            string script=@"
-$ErrorActionPreference='Stop'
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-Add-AppxPackage -Stage -Path $env:COLLAPSE_PACKAGE -ForceUpdateFromAnyVersion
-$null=[Windows.Management.Deployment.PackageManager,Windows.Management.Deployment,ContentType=WindowsRuntime]
-$manager=New-Object Windows.Management.Deployment.PackageManager
-$packages=$manager.FindPackages('Microsoft.MinecraftUWP_8wekyb3d8bbwe')
-$match=$packages | Where-Object { $_.Id.Name -ieq 'Microsoft.MinecraftUWP' -and $_.InstalledLocation.Path } | Where-Object {
-    $v=$_.Id.Version
-    $display=('{0}.{1}.{2}.{3}' -f $v.Major,$v.Minor,[math]::Floor($v.Build/100),($v.Build%100))
-    $display -eq $env:COLLAPSE_VERSION
-} | Select-Object -First 1
-if(-not $match){throw 'Windows не выдала папку подготовленной версии. Установи Minecraft for Windows через Xbox / Microsoft Store один раз и повтори.'}
-[Console]::WriteLine('COLLAPSE_PATH='+$match.InstalledLocation.Path)
-";
-            var result=await Shell(script,new Dictionary<string,string>{{"COLLAPSE_PACKAGE",file},{"COLLAPSE_VERSION",version}});
+            var result=await ShellElevated(StageScript,new Dictionary<string,string>{{"COLLAPSE_PACKAGE",file},{"COLLAPSE_VERSION",version},{"COLLAPSE_DEST",destination}});
             string line=result.Split(new[]{'\r','\n'},StringSplitOptions.RemoveEmptyEntries).LastOrDefault(l=>l.StartsWith("COLLAPSE_PATH="));
             if(line==null)throw new IOException("Службы Xbox не вернули расположение пакета.");
-            string source=line.Substring("COLLAPSE_PATH=".Length);
-            if(Collapse.Client(source)==null)throw new IOException("Установленный пакет Xbox недоступен для чтения.");
-            return source;
+            if(Collapse.Client(destination)==null)throw new IOException("Windows не скопировала файлы версии в библиотеку.");
+        }
+
+        internal const string StageScript=@"
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+if(Get-Process Minecraft.Windows,Minecraft -ErrorAction SilentlyContinue){throw 'Закрой Minecraft и повтори подготовку версии.'}
+$loose=@(Get-AppxPackage -AllUsers -Name Microsoft.MinecraftUWP | Where-Object {$_.IsDevelopmentMode})
+if($loose.Count){throw 'Пакет скачан, но Windows не разрешает совместную подготовку GDK и зарегистрированной распакованной версии Minecraft. Регистрация игры оставлена без изменений.'}
+Add-AppxPackage -Stage -Path $env:COLLAPSE_PACKAGE -ForceUpdateFromAnyVersion
+$display=[version]$env:COLLAPSE_VERSION
+$packageVersion=('{0}.{1}.{2}.{3}' -f $display.Major,$display.Minor,($display.Build*100+$display.Revision),0)
+$name='Microsoft.MinecraftUWP_'+$packageVersion+'_x64__8wekyb3d8bbwe'
+$match=Get-AppxPackage -AllUsers -Name Microsoft.MinecraftUWP | Where-Object {$_.PackageFullName -eq $name} | Select-Object -First 1
+if(-not $match){throw 'Windows не выдала папку подготовленной версии. Проверь Minecraft и службы Xbox в Microsoft Store.'}
+$source=$match.InstallLocation
+if(-not (Test-Path -LiteralPath (Join-Path $source 'AppxManifest.xml'))){throw 'Манифест подготовленной версии недоступен.'}
+if(-not $env:COLLAPSE_DEST -or -not (Test-Path -LiteralPath $env:COLLAPSE_DEST)){throw 'Не найдена папка подготовки лаунчера.'}
+if(@(Get-ChildItem -LiteralPath $env:COLLAPSE_DEST -Force).Count){throw 'Папка подготовки должна быть пустой.'}
+Get-ChildItem -LiteralPath $source -Force | Where-Object {$_.Name -ne 'AppxSignature.p7x'} | Copy-Item -Destination $env:COLLAPSE_DEST -Recurse -Force
+Write-Output ('COLLAPSE_PATH='+$env:COLLAPSE_DEST)
+";
+        static string Quote(string value){return "'"+value.Replace("'","''")+"'";}
+        static async Task<string> ShellElevated(string script,Dictionary<string,string> environment)
+        {
+            string job=Path.Combine(Store.Root,"Jobs",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(job);
+            string output=Path.Combine(job,"result.txt"),error=Path.Combine(job,"error.txt");
+            string sid=System.Security.Principal.WindowsIdentity.GetCurrent().User.Value;
+            var wrapper=new StringBuilder("$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';try {\n");
+            wrapper.Append("if([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne "+Quote(sid)+"){throw 'Подтверди запрос от текущего пользователя Windows.'}\n");
+            foreach(var pair in environment)wrapper.Append("$env:"+pair.Key+"="+Quote(pair.Value)+"\n");
+            wrapper.Append("$answer=& {\n"+script+"\n} | Out-String\n[IO.File]::WriteAllText("+Quote(output)+",$answer,[Text.Encoding]::UTF8)\n");
+            wrapper.Append("} catch {[IO.File]::WriteAllText("+Quote(error)+",$_.Exception.Message,[Text.Encoding]::UTF8);exit 1}");
+            var start=new ProcessStartInfo(Path.Combine(Environment.SystemDirectory,"WindowsPowerShell","v1.0","powershell.exe"),
+                "-NoProfile -NonInteractive -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(wrapper.ToString())))
+                {UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden};
+            try
+            {
+                using(var child=Process.Start(start)){await Task.Run(()=>child.WaitForExit());if(child.ExitCode!=0)throw new IOException(File.Exists(error)?CleanError(File.ReadAllText(error)):"Подготовка Windows отменена.");}
+                if(!File.Exists(output))throw new IOException("Windows не вернула результат подготовки.");
+                return File.ReadAllText(output);
+            }
+            catch(System.ComponentModel.Win32Exception e){if(e.NativeErrorCode==1223)throw new IOException("Подготовка отменена в запросе Windows. Пакет сохранён; можно повторить.");throw;}
+            finally{Store.DeleteOwned(job,Path.Combine(Store.Root,"Jobs"));}
         }
 
         internal static async Task<string> Shell(string script,Dictionary<string,string> environment)
         {
+            script="$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; try {\n"+script+"\n} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }";
             var start=new ProcessStartInfo(Path.Combine(Environment.SystemDirectory,"WindowsPowerShell","v1.0","powershell.exe"),
                 "-NoProfile -NonInteractive -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(script)));
             start.UseShellExecute=false;start.CreateNoWindow=true;
@@ -187,9 +211,21 @@ if(-not $match){throw 'Windows не выдала папку подготовле
                 bool exited=await Task.Run(()=>child.WaitForExit(600000));
                 if(!exited){try{child.Kill();}catch(InvalidOperationException){}throw new TimeoutException("Windows не завершила установку пакета.");}
                 string result=await output,error=await errors;
-                if(child.ExitCode!=0)throw new IOException(error.Trim());
+                if(child.ExitCode!=0)throw new IOException(CleanError(error));
                 return result;
             }
         }
+        internal static string CleanError(string error)
+        {
+            int xml=error.IndexOf("<Objs",StringComparison.Ordinal);
+            if(xml>=0)try {
+                var doc=XDocument.Parse(error.Substring(xml));
+                error=String.Join("\n",doc.Descendants().Where(e=>e.Name.LocalName=="S"&&(string)e.Attribute("S")=="Error").Select(e=>e.Value));
+                error=System.Text.RegularExpressions.Regex.Replace(error,@"_x([0-9A-Fa-f]{4})_",m=>((char)Convert.ToInt32(m.Groups[1].Value,16)).ToString());
+            } catch(System.Xml.XmlException) {error="Windows не завершила подготовку пакета.";}
+            error=error.Trim();
+            return error.Length==0?"Windows не завершила подготовку пакета.":error;
+        }
     }
 }
+
